@@ -27,10 +27,33 @@ cp .env.example .env   # fill in DATABASE_URL and SECRET_KEY
 
 Open http://localhost:5000, sign up, and start adding accounts.
 
-## Deploying to Railway
+## Deploying — two options
 
-Railway is **not free** — the Hobby plan is a ~$5/mo minimum (usage-based
-beyond a one-time trial credit), plus the Postgres add-on's own usage cost.
+### Option A: Render (free) + Neon (free Postgres)
+
+The genuinely-free path. Tradeoff: Render's free web service spins down
+after 15min of no traffic and takes ~1min to cold-start on the next
+request — fine for a handful of friends checking occasionally, not
+snappy on-demand.
+
+1. **Database**: create a free project at [neon.tech](https://neon.tech)
+   (no credit card). Copy its connection string (starts `postgresql://…`).
+2. **Web service**: at [render.com](https://render.com), New → Blueprint,
+   point at this repo — `render.yaml` defines the service (free plan,
+   `gunicorn` start command, `SECRET_KEY` auto-generated).
+3. In the Render dashboard, set the two `sync: false` env vars manually:
+   - `DATABASE_URL` → paste the Neon connection string from step 1.
+   - `FINNHUB_API_KEY` → optional, leave blank to skip (falls back to
+     yfinance-only news).
+4. Deploy. Tables auto-create on first boot (`db.init_db()`).
+
+Both free tiers have real limits worth knowing: Neon free = 0.5GB storage,
+compute scales to zero when idle (wakes automatically on the next query,
+no data loss). Render free = 750 instance-hours/mo, 15min idle spin-down.
+
+### Option B: Railway (paid, ~$5/mo+)
+
+No spin-down, single provider, DATABASE_URL auto-wired to Postgres.
 
 1. Create a new Railway project, add this repo as a service (Nixpacks
    build is auto-detected via `railway.json`/`Procfile`).
@@ -38,11 +61,8 @@ beyond a one-time trial credit), plus the Postgres add-on's own usage cost.
    `DATABASE_URL` into the web service's environment.
 3. Set the `SECRET_KEY` env var manually (any random 32+ byte string —
    `python3 -c "import secrets; print(secrets.token_hex(32))"`).
-4. Optionally set `FINNHUB_API_KEY` for richer news (app works fine
-   without it — falls back to yfinance-only).
-5. Deploy. Tables are created automatically on first boot (`db.init_db()`
-   runs `CREATE TABLE IF NOT EXISTS` — no separate migration step needed
-   at this schema-stable, friends-scale size).
+4. Optionally set `FINNHUB_API_KEY` for richer news.
+5. Deploy. Tables auto-create on first boot, same as above.
 
 ## What's different from a single-user NexusAI instance
 
