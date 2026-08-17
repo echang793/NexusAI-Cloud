@@ -1,0 +1,9 @@
+flask
+flask-login
+sqlalchemy
+psycopg[binary]
+gunicorn
+yfinance
+pandas
+python-dotenv
+finnhub-python

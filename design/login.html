@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Log in — NexusAI Cloud</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-theme="light" style="display:flex; align-items:center; justify-content:center; min-height:100vh; background:var(--bg);">
+  <div class="card card-pad" style="width:360px;">
+    <div class="brand" style="margin-bottom:20px;">
+      <div class="brand-mark"></div>
+      <div class="brand-name">Nexus<span class="ai">AI</span> <span class="muted" style="font-size:13px; font-weight:500;">Cloud</span></div>
+    </div>
+    <div style="font-size:18px; font-weight:600; margin-bottom:16px;">Log in</div>
+    <div id="err" style="display:none; color:var(--red); font-size:13px; margin-bottom:12px;"></div>
+    <div style="margin-bottom:12px;">
+      <label style="display:block; font-size:12px; color:var(--text-2); margin-bottom:4px;">Email</label>
+      <input id="email" type="email" autocomplete="email"
+        style="width:100%; padding:10px 12px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-size:14px; box-sizing:border-box;"/>
+    </div>
+    <div style="margin-bottom:18px;">
+      <label style="display:block; font-size:12px; color:var(--text-2); margin-bottom:4px;">Password</label>
+      <input id="password" type="password" autocomplete="current-password"
+        style="width:100%; padding:10px 12px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-size:14px; box-sizing:border-box;"/>
+    </div>
+    <button id="submit" class="btn-primary" style="width:100%; padding:10px;">Log in</button>
+    <div class="muted" style="font-size:13px; margin-top:16px; text-align:center;">
+      No account yet? <a href="/signup" style="color:var(--accent);">Sign up</a>
+    </div>
+  </div>
+<script>
+  const err = document.getElementById("err");
+  function submit() {
+    err.style.display = "none";
+    fetch("/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: document.getElementById("email").value,
+        password: document.getElementById("password").value,
+      }),
+    })
+      .then(r => r.json())
+      .then(resp => {
+        if (resp.ok) { window.location.href = "/"; return; }
+        err.textContent = resp.error || "Login failed.";
+        err.style.display = "block";
+      })
+      .catch(() => { err.textContent = "Login failed — try again."; err.style.display = "block"; });
+  }
+  document.getElementById("submit").addEventListener("click", submit);
+  document.getElementById("password").addEventListener("keydown", e => { if (e.key === "Enter") submit(); });
+</script>
+</body>
+</html>
