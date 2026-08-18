@@ -975,9 +975,15 @@ def signup_page():
     if user_id is None:
         return jsonify({"ok": False, "error": "That email is already registered."}), 409
     token = db.create_auth_token(user_id, "verify_email", ttl_hours=24)
-    mail.send_verification_email(email, _absolute_url(f"/verify-email/{token}"))
+    sent = mail.send_verification_email(email, _absolute_url(f"/verify-email/{token}"))
+    if not sent:
+        app.logger.error("SIGNUP: verification email failed to send to %s (user_id=%s) — "
+                          "check RESEND_API_KEY and Resend domain verification.", email, user_id)
     # Deliberately NOT logging in yet — email verification is required
-    # before the dashboard is reachable (per confirmed decision).
+    # before the dashboard is reachable (per confirmed decision). Response
+    # doesn't change on send failure (nothing to leak here — this user just
+    # created the account themselves) but the log line above is what you'd
+    # grep Render's log stream for if a friend reports never getting the email.
     return jsonify({"ok": True, "needsVerification": True})
 
 
@@ -1001,7 +1007,9 @@ def resend_verification():
     row = db.get_user_by_email(email) if email else None
     if row and not row["email_verified"]:
         token = db.create_auth_token(row["id"], "verify_email", ttl_hours=24)
-        mail.send_verification_email(row["email"], _absolute_url(f"/verify-email/{token}"))
+        sent = mail.send_verification_email(row["email"], _absolute_url(f"/verify-email/{token}"))
+        if not sent:
+            app.logger.error("RESEND-VERIFICATION: email failed to send to %s (user_id=%s).", email, row["id"])
     return jsonify({"ok": True, "message": "If that email needs verifying, a new link is on its way."})
 
 
@@ -1115,7 +1123,9 @@ def forgot_password_page():
     row = db.get_user_by_email(email) if email else None
     if row:
         token = db.create_auth_token(row["id"], "reset_password", ttl_hours=1)
-        mail.send_password_reset_email(row["email"], _absolute_url(f"/reset-password/{token}"))
+        sent = mail.send_password_reset_email(row["email"], _absolute_url(f"/reset-password/{token}"))
+        if not sent:
+            app.logger.error("FORGOT-PASSWORD: email failed to send to %s (user_id=%s).", email, row["id"])
     # Same response whether or not the email exists — avoids leaking which
     # emails have accounts (account enumeration).
     return jsonify({"ok": True, "message": "If that email has an account, a reset link is on its way."})
