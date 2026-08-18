@@ -69,6 +69,15 @@ db.init_db()
 limiter = Limiter(get_remote_address, app=app, storage_uri="memory://")
 
 
+@app.errorhandler(429)
+def _rate_limited(e):
+    # flask-limiter's default 429 body is plain text, not JSON — every
+    # auth page's frontend does `.then(r => r.json())` on the response, so
+    # without this handler a rate-limited request throws in the browser and
+    # surfaces as a generic "try again" instead of explaining what happened.
+    return jsonify({"ok": False, "error": "Too many attempts — please wait a minute and try again."}), 429
+
+
 @app.after_request
 def _security_headers(resp):
     resp.headers["X-Content-Type-Options"] = "nosniff"
@@ -1280,21 +1289,50 @@ def api_import_portfolio():
     except Exception as e:
         return jsonify({"ok": False, "error": f"Could not parse CSV: {e}"}), 400
 
+    if not raw_rows:
+        return jsonify({"ok": False, "error": "CSV has no rows."}), 400
+    missing_cols = {"ticker", "shares"} - set(raw_rows[0].keys())
+    if missing_cols:
+        return jsonify({"ok": False, "error": (
+            f"CSV is missing column(s): {', '.join(sorted(missing_cols))}. "
+            "Expected headers: ticker, shares, avg_cost, account_name."
+        )}), 400
+
     resolved = []
     for r in raw_rows:
         account_name = str(r.get("account_name") or r.get("account") or "").strip()
-        account_id = db.resolve_account_by_name(current_user.id, account_name) if account_name else None
-        if account_id is None:
-            continue
-        r["account_id"] = account_id
+        r["account_id"] = db.resolve_account_by_name(current_user.id, account_name)
         resolved.append(r)
     clean = pf._coerce(resolved)
+
+    # Explain what got dropped instead of a bare count — a friend's first
+    # CSV import failing silently is the #1 reason they'd give up on this.
+    skipped_reasons = []
+    for r in resolved:
+        ticker = str(r.get("ticker", "")).strip()
+        if not ticker:
+            skipped_reasons.append("a row with no ticker")
+            continue
+        try:
+            shares = float(r.get("shares", 0) or 0)
+        except (TypeError, ValueError):
+            skipped_reasons.append(f"{ticker}: shares isn't a number")
+            continue
+        if shares <= 0:
+            skipped_reasons.append(f"{ticker}: shares must be greater than 0")
+
     if not clean:
-        return jsonify({"ok": False, "error": "No valid rows (need ticker, shares, avg_cost, account_name)"}), 400
+        return jsonify({"ok": False, "error": "No valid rows found. " + (
+            "; ".join(skipped_reasons[:5]) if skipped_reasons else
+            "Check that ticker/shares/avg_cost/account_name columns are filled in."
+        )}), 400
     for h in clean:
         db.save_holding(current_user.id, h)
     _refresh_after_holdings_change(current_user.id, db.load_holdings(current_user.id))
-    return jsonify({"ok": True, "count": len(clean), "dropped": len(raw_rows) - len(clean)})
+    resp = {"ok": True, "count": len(clean), "dropped": len(raw_rows) - len(clean)}
+    if skipped_reasons:
+        resp["skipped"] = skipped_reasons[:5]
+    return jsonify(resp)
 
 
 @app.route("/api/snapshot-now", methods=["POST"])

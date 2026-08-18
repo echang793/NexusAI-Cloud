@@ -6,8 +6,8 @@
 <title>Log in — NexusAI Cloud</title>
 <link rel="stylesheet" href="styles.css">
 </head>
-<body data-theme="dark" style="display:flex; align-items:center; justify-content:center; min-height:100vh; background:var(--bg);">
-  <div class="card card-pad" style="width:360px;">
+<body data-theme="dark" style="display:flex; align-items:center; justify-content:center; min-height:100vh; background:var(--bg); padding:16px; box-sizing:border-box;">
+  <div class="card card-pad" style="width:100%; max-width:360px;">
     <div class="brand" style="margin-bottom:20px;">
       <div class="brand-mark"></div>
       <div class="brand-name">Nexus<span class="ai">AI</span> <span class="muted" style="font-size:13px; font-weight:500;">Cloud</span></div>
@@ -32,6 +32,9 @@
         <a href="/forgot-password" style="color:var(--accent); font-size:12px;">Forgot password?</a>
       </div>
       <button id="submit" class="btn-primary" style="width:100%; padding:10px;">Log in</button>
+      <div id="cold-start-hint" style="display:none; text-align:center; font-size:11px; color:var(--text-2); margin-top:8px;">
+        Still loading — the app sleeps when idle and can take up to a minute to wake up.
+      </div>
       <div id="resend-wrap" style="display:none; text-align:center; margin-top:10px;">
         <button id="resend-btn" class="btn-ghost" style="font-size:12px;">Resend verification email</button>
       </div>
@@ -67,16 +70,26 @@
   const resendWrap = document.getElementById("resend-wrap");
   let usingBackup = false;
 
+  const submitBtn = document.getElementById("submit");
+  const coldStartHint = document.getElementById("cold-start-hint");
+
   function submit() {
     err.style.display = "none";
     resendWrap.style.display = "none";
+    coldStartHint.style.display = "none";
     const email = document.getElementById("email").value;
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Logging in…";
+    const coldStartTimer = setTimeout(() => { coldStartHint.style.display = "block"; }, 4000);
     fetch("/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password: document.getElementById("password").value }),
     })
-      .then(r => r.json())
+      .then(r => {
+        if (r.status === 429) return r.json().catch(() => ({ error: "Too many attempts — try again in a few minutes." }));
+        return r.json();
+      })
       .then(resp => {
         if (resp.ok && resp.needs2fa) {
           document.getElementById("step-password").hidden = true;
@@ -92,9 +105,15 @@
           resendWrap.dataset.email = email;
         }
       })
-      .catch(() => { err.textContent = "Login failed — try again."; err.style.display = "block"; });
+      .catch(() => { err.textContent = "Login failed — try again."; err.style.display = "block"; })
+      .finally(() => {
+        clearTimeout(coldStartTimer);
+        coldStartHint.style.display = "none";
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Log in";
+      });
   }
-  document.getElementById("submit").addEventListener("click", submit);
+  submitBtn.addEventListener("click", submit);
   document.getElementById("password").addEventListener("keydown", e => { if (e.key === "Enter") submit(); });
 
   document.getElementById("resend-btn").addEventListener("click", () => {

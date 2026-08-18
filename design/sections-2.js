@@ -358,7 +358,13 @@
         .then(r => r.json()).then(res => {
           if (res.ok) {
             importBtn.innerHTML = orig;
-            if (window.NexusToast) NexusToast(`Imported ${res.count} holdings${res.dropped ? ` (${res.dropped} skipped)` : ""}`, "ok");
+            let msg = `Imported ${res.count} holdings`;
+            if (res.dropped) {
+              msg += ` (${res.dropped} skipped`;
+              msg += res.skipped && res.skipped.length ? `: ${res.skipped.join("; ")}` : "";
+              msg += ")";
+            }
+            if (window.NexusToast) NexusToast(msg, "ok");
             setTimeout(_reloadPortfolioSection, 2500);
           } else {
             if (window.NexusToast) NexusToast(res.error || "Import failed", "err");

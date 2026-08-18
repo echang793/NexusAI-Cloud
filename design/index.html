@@ -64,6 +64,14 @@
       <button class="icon-btn" id="settings-btn" title="Settings"></button>
     </header>
 
+    <div id="tfa-nudge-banner" hidden style="display:flex; align-items:center; gap:12px; margin:16px 20px 0; padding:12px 16px; border-radius:12px; background:var(--amber-soft); border:1px solid var(--amber);">
+      <div style="flex:1; font-size:13px;">
+        <strong>Two-factor authentication is off.</strong>
+        <span class="muted">Turn it on to add a second layer of protection for your account.</span>
+      </div>
+      <button id="tfa-nudge-enable" class="btn-primary" style="padding:6px 14px; font-size:12px;">Enable 2FA</button>
+      <button id="tfa-nudge-dismiss" class="btn-ghost" style="padding:6px 10px; font-size:12px;">Not now</button>
+    </div>
     <div class="content">
       <div id="section-overview" class="section active"></div>
       <div id="section-analyze" class="section"></div>
@@ -336,6 +344,28 @@
     }
   }
   hydrateProfileChip();
+
+  // 2FA nudge — one-time banner for accounts that haven't enabled it yet.
+  // Dismissal is remembered per-browser (localStorage), but re-checked
+  // against live totpEnabled every load so it disappears for good once
+  // they actually turn 2FA on, dismissed or not.
+  (function tfaNudge() {
+    const D = window.NEXUS_DATA;
+    const banner = document.getElementById("tfa-nudge-banner");
+    if (!banner || !D || !D.profile) return;
+    if (D.profile.totpEnabled) return;
+    if (localStorage.getItem("nexus_2fa_nudge_dismissed") === "1") return;
+    banner.hidden = false;
+    document.getElementById("tfa-nudge-enable").addEventListener("click", () => {
+      banner.hidden = true;
+      openSettings();
+      document.getElementById("tfa-enable-btn").click();
+    });
+    document.getElementById("tfa-nudge-dismiss").addEventListener("click", () => {
+      localStorage.setItem("nexus_2fa_nudge_dismissed", "1");
+      banner.hidden = true;
+    });
+  })();
 
   // Render each section's HTML
   const titles = {
