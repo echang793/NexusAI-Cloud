@@ -21,21 +21,25 @@ docker run -d --name nexusai-pg -e POSTGRES_PASSWORD=devpass -e POSTGRES_DB=nexu
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-cp .env.example .env   # fill in DATABASE_URL, SECRET_KEY, RESEND_API_KEY
+cp .env.example .env   # fill in DATABASE_URL, SECRET_KEY, BREVO_API_KEY, MAIL_FROM
 .venv/bin/python3 server.py
 ```
 
-Without `RESEND_API_KEY` set, verification/reset emails are logged to the
-console instead of sent — grab the link from the log to test the flow
-locally without a Resend account.
+Without `BREVO_API_KEY`/`MAIL_FROM` set, verification/reset emails are
+logged to the console instead of sent — grab the link from the log to test
+the flow locally without a Brevo account.
 
 Open http://localhost:5000, sign up, and start adding accounts.
 
 ## Deploying — two options
 
-Both need a free [Resend](https://resend.com) account (sign up, copy the
-API key — no domain verification needed, sends from `onboarding@resend.dev`)
-for verification/reset emails to actually deliver.
+Both need a free [Brevo](https://brevo.com) account for verification/reset
+emails to actually deliver: sign up (no credit card), verify one sender
+email address you own under **Settings > Senders** (click the confirmation
+link Brevo emails you), then grab an API key under **Settings > SMTP & API**.
+Free tier is 300 emails/day, permanent, and — unlike Resend's sandbox mode —
+sends to *any* recipient once your one sender address is verified, no domain
+purchase needed.
 
 ### Option A: Render (free) + Neon (free Postgres)
 
@@ -51,7 +55,8 @@ snappy on-demand.
    `gunicorn` start command, `SECRET_KEY` auto-generated).
 3. In the Render dashboard, set the `sync: false` env vars manually:
    - `DATABASE_URL` → paste the Neon connection string from step 1.
-   - `RESEND_API_KEY` → from your Resend account.
+   - `BREVO_API_KEY` → from your Brevo account (Settings > SMTP & API).
+   - `MAIL_FROM` → the sender email address you verified in Brevo.
    - `APP_BASE_URL` → the `.onrender.com` URL Render gives this service
      (needed so verification/reset email links point to the right place).
    - `FINNHUB_API_KEY` → optional, leave blank to skip (falls back to
@@ -72,7 +77,7 @@ No spin-down, single provider, DATABASE_URL auto-wired to Postgres.
    `DATABASE_URL` into the web service's environment.
 3. Set env vars manually: `SECRET_KEY` (any random 32+ byte string —
    `python3 -c "import secrets; print(secrets.token_hex(32))"`),
-   `RESEND_API_KEY`, `APP_BASE_URL` (the Railway-assigned domain).
+   `BREVO_API_KEY`, `MAIL_FROM`, `APP_BASE_URL` (the Railway-assigned domain).
 4. Optionally set `FINNHUB_API_KEY` for richer news.
 5. Deploy. Tables auto-create on first boot, same as above.
 

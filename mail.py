@@ -1,9 +1,16 @@
-"""Thin Resend wrapper for verification/reset emails.
+"""Thin Brevo (formerly Sendinblue) wrapper for verification/reset emails.
 
-Free tier: 3,000/mo, 100/day, sends from onboarding@resend.dev without
-needing your own domain verified. If RESEND_API_KEY isn't set (local dev
-without a Resend account), emails are logged instead of sent — lets the
-rest of the flow be exercised without needing real email delivery.
+Switched from Resend: Resend's onboarding@resend.dev sender can only send to
+the email address the Resend account itself was signed up with, until a
+domain is verified — fine for testing, useless for real friends signing up.
+Brevo's free tier (300/day, permanent, no card) sends to ANY recipient once
+you verify a single sender address you own (Settings > Senders, click a
+confirmation link) — no domain purchase/DNS needed.
+
+FROM_ADDRESS must be that verified sender address, set via MAIL_FROM.
+If BREVO_API_KEY isn't set (local dev without a Brevo account), emails are
+logged instead of sent — lets the rest of the flow be exercised without
+needing real email delivery.
 """
 
 import logging
@@ -13,27 +20,33 @@ import requests
 
 log = logging.getLogger("nexusai_cloud.mail")
 
-RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
-FROM_ADDRESS = os.getenv("MAIL_FROM", "NexusAI Cloud <onboarding@resend.dev>")
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", "").strip()
+FROM_ADDRESS = os.getenv("MAIL_FROM", "").strip()
+FROM_NAME = "NexusAI Cloud"
 
 
 def _send(to: str, subject: str, html: str) -> bool:
-    if not RESEND_API_KEY:
-        log.warning("RESEND_API_KEY not set — email NOT sent, logging instead.\nTo: %s\nSubject: %s\n%s", to, subject, html)
+    if not BREVO_API_KEY or not FROM_ADDRESS:
+        log.warning("BREVO_API_KEY/MAIL_FROM not set — email NOT sent, logging instead.\nTo: %s\nSubject: %s\n%s", to, subject, html)
         return False
     try:
         resp = requests.post(
-            "https://api.resend.com/emails",
-            headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
-            json={"from": FROM_ADDRESS, "to": [to], "subject": subject, "html": html},
+            "https://api.brevo.com/v3/smtp/email",
+            headers={"api-key": BREVO_API_KEY, "Content-Type": "application/json", "Accept": "application/json"},
+            json={
+                "sender": {"name": FROM_NAME, "email": FROM_ADDRESS},
+                "to": [{"email": to}],
+                "subject": subject,
+                "htmlContent": html,
+            },
             timeout=10,
         )
         if resp.status_code >= 300:
-            log.error("Resend send failed (%s): %s", resp.status_code, resp.text[:500])
+            log.error("Brevo send failed (%s): %s", resp.status_code, resp.text[:500])
             return False
         return True
     except requests.RequestException as e:
-        log.error("Resend send raised: %s", e)
+        log.error("Brevo send raised: %s", e)
         return False
 
 

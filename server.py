@@ -978,7 +978,7 @@ def signup_page():
     sent = mail.send_verification_email(email, _absolute_url(f"/verify-email/{token}"))
     if not sent:
         app.logger.error("SIGNUP: verification email failed to send to %s (user_id=%s) — "
-                          "check RESEND_API_KEY and Resend domain verification.", email, user_id)
+                          "check BREVO_API_KEY/MAIL_FROM and that MAIL_FROM is a verified Brevo sender.", email, user_id)
     # Deliberately NOT logging in yet — email verification is required
     # before the dashboard is reachable (per confirmed decision). Response
     # doesn't change on send failure (nothing to leak here — this user just

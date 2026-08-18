@@ -10,7 +10,9 @@ services:
         generateValue: true
       - key: DATABASE_URL
         sync: false
-      - key: RESEND_API_KEY
+      - key: BREVO_API_KEY
+        sync: false
+      - key: MAIL_FROM
         sync: false
       - key: APP_BASE_URL
         sync: false
