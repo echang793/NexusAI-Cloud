@@ -12,45 +12,128 @@
       <div class="brand-mark"></div>
       <div class="brand-name">Nexus<span class="ai">AI</span> <span class="muted" style="font-size:13px; font-weight:500;">Cloud</span></div>
     </div>
-    <div style="font-size:18px; font-weight:600; margin-bottom:16px;">Log in</div>
-    <div id="err" style="display:none; color:var(--red); font-size:13px; margin-bottom:12px;"></div>
-    <div style="margin-bottom:12px;">
-      <label style="display:block; font-size:12px; color:var(--text-2); margin-bottom:4px;">Email</label>
-      <input id="email" type="email" autocomplete="email"
-        style="width:100%; padding:10px 12px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-size:14px; box-sizing:border-box;"/>
+
+    <!-- Step 1: email + password -->
+    <div id="step-password">
+      <div style="font-size:18px; font-weight:600; margin-bottom:16px;">Log in</div>
+      <div id="err" style="display:none; color:var(--red); font-size:13px; margin-bottom:12px;"></div>
+      <div id="notice" style="display:none; color:var(--text-2); font-size:13px; margin-bottom:12px; background:var(--surface-2); padding:10px; border-radius:8px;"></div>
+      <div style="margin-bottom:12px;">
+        <label style="display:block; font-size:12px; color:var(--text-2); margin-bottom:4px;">Email</label>
+        <input id="email" type="email" autocomplete="email"
+          style="width:100%; padding:10px 12px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-size:14px; box-sizing:border-box;"/>
+      </div>
+      <div style="margin-bottom:8px;">
+        <label style="display:block; font-size:12px; color:var(--text-2); margin-bottom:4px;">Password</label>
+        <input id="password" type="password" autocomplete="current-password"
+          style="width:100%; padding:10px 12px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-size:14px; box-sizing:border-box;"/>
+      </div>
+      <div style="text-align:right; margin-bottom:14px;">
+        <a href="/forgot-password" style="color:var(--accent); font-size:12px;">Forgot password?</a>
+      </div>
+      <button id="submit" class="btn-primary" style="width:100%; padding:10px;">Log in</button>
+      <div id="resend-wrap" style="display:none; text-align:center; margin-top:10px;">
+        <button id="resend-btn" class="btn-ghost" style="font-size:12px;">Resend verification email</button>
+      </div>
+      <div class="muted" style="font-size:13px; margin-top:16px; text-align:center;">
+        No account yet? <a href="/signup" style="color:var(--accent);">Sign up</a>
+      </div>
     </div>
-    <div style="margin-bottom:18px;">
-      <label style="display:block; font-size:12px; color:var(--text-2); margin-bottom:4px;">Password</label>
-      <input id="password" type="password" autocomplete="current-password"
-        style="width:100%; padding:10px 12px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-size:14px; box-sizing:border-box;"/>
-    </div>
-    <button id="submit" class="btn-primary" style="width:100%; padding:10px;">Log in</button>
-    <div class="muted" style="font-size:13px; margin-top:16px; text-align:center;">
-      No account yet? <a href="/signup" style="color:var(--accent);">Sign up</a>
+
+    <!-- Step 2: 2FA code (shown only if the account has 2FA enabled) -->
+    <div id="step-2fa" hidden>
+      <div style="font-size:18px; font-weight:600; margin-bottom:8px;">Two-factor code</div>
+      <div class="muted" style="font-size:13px; margin-bottom:16px;">Enter the 6-digit code from your authenticator app.</div>
+      <div id="err2" style="display:none; color:var(--red); font-size:13px; margin-bottom:12px;"></div>
+      <div style="margin-bottom:14px;">
+        <input id="code" inputmode="numeric" autocomplete="one-time-code" placeholder="123456" maxlength="10"
+          style="width:100%; padding:10px 12px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-size:18px; text-align:center; letter-spacing:0.1em; box-sizing:border-box;"/>
+      </div>
+      <button id="submit2" class="btn-primary" style="width:100%; padding:10px;">Verify</button>
+      <div style="text-align:center; margin-top:12px;">
+        <button id="use-backup" class="btn-ghost" style="font-size:12px;">Use a backup code instead</button>
+      </div>
     </div>
   </div>
 <script>
+  const params = new URLSearchParams(window.location.search);
+  const notice = document.getElementById("notice");
+  if (params.get("verify") === "expired") {
+    notice.textContent = "That verification link expired or was already used — sign in and we'll help you resend it.";
+    notice.style.display = "block";
+  }
+
   const err = document.getElementById("err");
+  const resendWrap = document.getElementById("resend-wrap");
+  let usingBackup = false;
+
   function submit() {
     err.style.display = "none";
+    resendWrap.style.display = "none";
+    const email = document.getElementById("email").value;
     fetch("/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        email: document.getElementById("email").value,
-        password: document.getElementById("password").value,
-      }),
+      body: JSON.stringify({ email, password: document.getElementById("password").value }),
     })
       .then(r => r.json())
       .then(resp => {
+        if (resp.ok && resp.needs2fa) {
+          document.getElementById("step-password").hidden = true;
+          document.getElementById("step-2fa").hidden = false;
+          document.getElementById("code").focus();
+          return;
+        }
         if (resp.ok) { window.location.href = "/"; return; }
         err.textContent = resp.error || "Login failed.";
         err.style.display = "block";
+        if (resp.needsVerification) {
+          resendWrap.style.display = "block";
+          resendWrap.dataset.email = email;
+        }
       })
       .catch(() => { err.textContent = "Login failed — try again."; err.style.display = "block"; });
   }
   document.getElementById("submit").addEventListener("click", submit);
   document.getElementById("password").addEventListener("keydown", e => { if (e.key === "Enter") submit(); });
+
+  document.getElementById("resend-btn").addEventListener("click", () => {
+    const email = resendWrap.dataset.email || document.getElementById("email").value;
+    fetch("/resend-verification", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    }).then(r => r.json()).then(resp => {
+      err.style.display = "block";
+      err.style.color = "var(--green)";
+      err.textContent = resp.message || "Check your inbox.";
+    });
+  });
+
+  const err2 = document.getElementById("err2");
+  function submit2fa() {
+    err2.style.display = "none";
+    fetch("/2fa/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: document.getElementById("code").value, backup: usingBackup }),
+    })
+      .then(r => r.json())
+      .then(resp => {
+        if (resp.ok) { window.location.href = "/"; return; }
+        err2.textContent = resp.error || "Invalid code.";
+        err2.style.display = "block";
+      })
+      .catch(() => { err2.textContent = "Verification failed — try again."; err2.style.display = "block"; });
+  }
+  document.getElementById("submit2").addEventListener("click", submit2fa);
+  document.getElementById("code").addEventListener("keydown", e => { if (e.key === "Enter") submit2fa(); });
+  document.getElementById("use-backup").addEventListener("click", () => {
+    usingBackup = !usingBackup;
+    const codeInput = document.getElementById("code");
+    codeInput.placeholder = usingBackup ? "Backup code" : "123456";
+    codeInput.value = "";
+    document.getElementById("use-backup").textContent = usingBackup ? "Use authenticator code instead" : "Use a backup code instead";
+  });
 </script>
 </body>
 </html>

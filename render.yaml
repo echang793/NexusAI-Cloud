@@ -10,6 +10,10 @@ services:
         generateValue: true
       - key: DATABASE_URL
         sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: APP_BASE_URL
+        sync: false
       - key: FINNHUB_API_KEY
         sync: false
       - key: FLASK_ENV

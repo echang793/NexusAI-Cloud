@@ -21,13 +21,21 @@ docker run -d --name nexusai-pg -e POSTGRES_PASSWORD=devpass -e POSTGRES_DB=nexu
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-cp .env.example .env   # fill in DATABASE_URL and SECRET_KEY
+cp .env.example .env   # fill in DATABASE_URL, SECRET_KEY, RESEND_API_KEY
 .venv/bin/python3 server.py
 ```
+
+Without `RESEND_API_KEY` set, verification/reset emails are logged to the
+console instead of sent — grab the link from the log to test the flow
+locally without a Resend account.
 
 Open http://localhost:5000, sign up, and start adding accounts.
 
 ## Deploying — two options
+
+Both need a free [Resend](https://resend.com) account (sign up, copy the
+API key — no domain verification needed, sends from `onboarding@resend.dev`)
+for verification/reset emails to actually deliver.
 
 ### Option A: Render (free) + Neon (free Postgres)
 
@@ -41,8 +49,11 @@ snappy on-demand.
 2. **Web service**: at [render.com](https://render.com), New → Blueprint,
    point at this repo — `render.yaml` defines the service (free plan,
    `gunicorn` start command, `SECRET_KEY` auto-generated).
-3. In the Render dashboard, set the two `sync: false` env vars manually:
+3. In the Render dashboard, set the `sync: false` env vars manually:
    - `DATABASE_URL` → paste the Neon connection string from step 1.
+   - `RESEND_API_KEY` → from your Resend account.
+   - `APP_BASE_URL` → the `.onrender.com` URL Render gives this service
+     (needed so verification/reset email links point to the right place).
    - `FINNHUB_API_KEY` → optional, leave blank to skip (falls back to
      yfinance-only news).
 4. Deploy. Tables auto-create on first boot (`db.init_db()`).
@@ -59,10 +70,42 @@ No spin-down, single provider, DATABASE_URL auto-wired to Postgres.
    build is auto-detected via `railway.json`/`Procfile`).
 2. Add a **Postgres** database to the same project — Railway auto-injects
    `DATABASE_URL` into the web service's environment.
-3. Set the `SECRET_KEY` env var manually (any random 32+ byte string —
-   `python3 -c "import secrets; print(secrets.token_hex(32))"`).
+3. Set env vars manually: `SECRET_KEY` (any random 32+ byte string —
+   `python3 -c "import secrets; print(secrets.token_hex(32))"`),
+   `RESEND_API_KEY`, `APP_BASE_URL` (the Railway-assigned domain).
 4. Optionally set `FINNHUB_API_KEY` for richer news.
 5. Deploy. Tables auto-create on first boot, same as above.
+
+## Security
+
+- **Passwords**: PBKDF2-hashed (`werkzeug.security`), never stored or
+  logged in plaintext.
+- **Email verification**: required before a new signup can reach the
+  dashboard — blocks typo'd emails and signups using someone else's address.
+- **2FA**: optional TOTP (any standard authenticator app), with one-time
+  backup codes for device loss. Not SMS — no per-message cost, not
+  vulnerable to SIM-swap.
+- **Password reset**: self-service via emailed one-time link (1hr expiry).
+  The request endpoint always returns the same response whether or not the
+  email exists, so it can't be used to enumerate registered accounts.
+- **Brute-force protection**: rate limiting on login/signup/reset/2FA
+  endpoints (10/min/IP), plus a per-account lockout (15min) after 8
+  consecutive failed logins, independent of source IP.
+- **Session cookies**: `HttpOnly` + `Secure` + `SameSite=Lax` — not
+  readable by JS, not sent cross-site, not sent over plain HTTP.
+- **Security headers**: HSTS, `X-Content-Type-Options: nosniff`,
+  `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`.
+  No Content-Security-Policy — the frontend uses inline scripts/styles
+  throughout, and a CSP strict enough to matter would break it; an
+  accepted tradeoff for this pass, not an oversight.
+- **Per-user data isolation**: every table row is scoped by `user_id`,
+  every query filters on it — verified directly (not just assumed) with
+  two real test accounts checking each other's raw API responses.
+
+Not covered yet: no audit log of login/security events, no anomaly/new-
+device alerting, no encryption at rest beyond whatever the Postgres
+provider (Neon/Railway) does by default. Reasonable for a friends-scale
+app; would want more before treating it as a general-purpose product.
 
 ## What's different from a single-user NexusAI instance
 

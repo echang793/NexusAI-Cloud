@@ -100,6 +100,43 @@ def init_db():
             )
         """))
 
+        # --- Email verification / 2FA / lockout — additive columns on an
+        # already-deployed table. IF NOT EXISTS keeps this idempotent on
+        # every boot, same spirit as the CREATE TABLE statements above; no
+        # separate migration tool needed at this schema-stable, small scale.
+        # Grandfather in any user that already existed before this column
+        # was added — DEFAULT true backfills existing rows, then the
+        # column default flips to false so real NEW signups (via
+        # create_user(), which never sets this explicitly) require
+        # verification as intended. Without this two-step, every friend
+        # who signed up before this deploy would be locked out on their
+        # next login.
+        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT true"))
+        conn.execute(text("ALTER TABLE users ALTER COLUMN email_verified SET DEFAULT false"))
+        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret TEXT"))
+        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN NOT NULL DEFAULT false"))
+        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_count INTEGER NOT NULL DEFAULT 0"))
+        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ"))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS auth_tokens (
+                token TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                purpose TEXT NOT NULL,
+                expires_at TIMESTAMPTZ NOT NULL,
+                used_at TIMESTAMPTZ
+            )
+        """))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens(user_id)"))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS backup_codes (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                code_hash TEXT NOT NULL,
+                used_at TIMESTAMPTZ
+            )
+        """))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_backup_codes_user ON backup_codes(user_id)"))
+
 
 # --- Users / auth ------------------------------------------------------------
 def create_user(email: str, password: str):
@@ -123,10 +160,13 @@ def create_user(email: str, password: str):
     return user_id
 
 
+_USER_COLS = "id, email, password_hash, email_verified, totp_secret, totp_enabled, failed_login_count, locked_until"
+
+
 def get_user_by_email(email: str):
     with engine.connect() as conn:
         row = conn.execute(
-            text("SELECT id, email, password_hash FROM users WHERE email=:e"),
+            text(f"SELECT {_USER_COLS} FROM users WHERE email=:e"),
             {"e": email.strip().lower()},
         ).first()
     return dict(row._mapping) if row else None
@@ -135,13 +175,114 @@ def get_user_by_email(email: str):
 def get_user_by_id(user_id: int):
     with engine.connect() as conn:
         row = conn.execute(
-            text("SELECT id, email, password_hash FROM users WHERE id=:u"), {"u": user_id}
+            text(f"SELECT {_USER_COLS} FROM users WHERE id=:u"), {"u": user_id}
         ).first()
     return dict(row._mapping) if row else None
 
 
 def verify_password(user_row: dict, password: str) -> bool:
     return check_password_hash(user_row["password_hash"], password)
+
+
+# --- Email verification / password reset tokens ------------------------------
+def create_auth_token(user_id: int, purpose: str, ttl_hours: int = 24) -> str:
+    import secrets as _secrets
+    token = _secrets.token_urlsafe(32)
+    expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=ttl_hours)
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO auth_tokens (token, user_id, purpose, expires_at) VALUES (:t, :u, :p, :exp)
+        """), {"t": token, "u": user_id, "p": purpose, "exp": expires_at})
+    return token
+
+
+def consume_auth_token(token: str, purpose: str):
+    """Marks the token used and returns its user_id, or None if missing/
+    expired/already-used/wrong-purpose. One-time-use by design."""
+    with engine.begin() as conn:
+        row = conn.execute(text("""
+            SELECT user_id, expires_at, used_at, purpose FROM auth_tokens WHERE token=:t
+        """), {"t": token}).first()
+        if not row or row.purpose != purpose or row.used_at is not None:
+            return None
+        if row.expires_at < datetime.datetime.now(datetime.timezone.utc):
+            return None
+        conn.execute(text("UPDATE auth_tokens SET used_at = now() WHERE token=:t"), {"t": token})
+    return row.user_id
+
+
+def mark_email_verified(user_id: int) -> None:
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE users SET email_verified = true WHERE id=:u"), {"u": user_id})
+
+
+def set_password(user_id: int, password: str) -> None:
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE users SET password_hash=:p WHERE id=:u"), {"p": generate_password_hash(password), "u": user_id})
+
+
+# --- TOTP 2FA ------------------------------------------------------------------
+def set_totp_secret(user_id: int, secret: str) -> None:
+    """Stores a pending (not-yet-enabled) secret — set_totp_enabled() flips it live."""
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE users SET totp_secret=:s WHERE id=:u"), {"s": secret, "u": user_id})
+
+
+def set_totp_enabled(user_id: int, enabled: bool) -> None:
+    with engine.begin() as conn:
+        if enabled:
+            conn.execute(text("UPDATE users SET totp_enabled=true WHERE id=:u"), {"u": user_id})
+        else:
+            conn.execute(text("UPDATE users SET totp_enabled=false, totp_secret=NULL WHERE id=:u"), {"u": user_id})
+            conn.execute(text("DELETE FROM backup_codes WHERE user_id=:u"), {"u": user_id})
+
+
+def store_backup_codes(user_id: int, hashed_codes: list) -> None:
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM backup_codes WHERE user_id=:u"), {"u": user_id})
+        for h in hashed_codes:
+            conn.execute(text("INSERT INTO backup_codes (user_id, code_hash) VALUES (:u, :h)"), {"u": user_id, "h": h})
+
+
+def consume_backup_code(user_id: int, code: str) -> bool:
+    """Checks `code` against this user's unused backup codes; marks the
+    match used (single-use) and returns True, or False if none match."""
+    with engine.begin() as conn:
+        rows = conn.execute(text("""
+            SELECT id, code_hash FROM backup_codes WHERE user_id=:u AND used_at IS NULL
+        """), {"u": user_id}).all()
+        for row in rows:
+            if check_password_hash(row.code_hash, code):
+                conn.execute(text("UPDATE backup_codes SET used_at = now() WHERE id=:id"), {"id": row.id})
+                return True
+    return False
+
+
+# --- Login lockout ---------------------------------------------------------------
+_LOCKOUT_THRESHOLD = 8
+_LOCKOUT_MINUTES = 15
+
+
+def record_failed_login(user_id: int) -> None:
+    with engine.begin() as conn:
+        row = conn.execute(text("SELECT failed_login_count FROM users WHERE id=:u"), {"u": user_id}).first()
+        count = (row.failed_login_count if row else 0) + 1
+        if count >= _LOCKOUT_THRESHOLD:
+            locked_until = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=_LOCKOUT_MINUTES)
+            conn.execute(text("UPDATE users SET failed_login_count=:c, locked_until=:l WHERE id=:u"),
+                         {"c": count, "l": locked_until, "u": user_id})
+        else:
+            conn.execute(text("UPDATE users SET failed_login_count=:c WHERE id=:u"), {"c": count, "u": user_id})
+
+
+def reset_failed_login(user_id: int) -> None:
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE users SET failed_login_count=0, locked_until=NULL WHERE id=:u"), {"u": user_id})
+
+
+def is_locked(user_row: dict) -> bool:
+    locked_until = user_row.get("locked_until")
+    return bool(locked_until and locked_until > datetime.datetime.now(datetime.timezone.utc))
 
 
 # --- Profile -------------------------------------------------------------------

@@ -1,5 +1,6 @@
 flask
 flask-login
+flask-limiter
 sqlalchemy
 psycopg[binary]
 gunicorn
@@ -7,3 +8,6 @@ yfinance
 pandas
 python-dotenv
 finnhub-python
+requests
+pyotp
+qrcode[pil]

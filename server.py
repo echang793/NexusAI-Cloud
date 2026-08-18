@@ -16,8 +16,11 @@ import sys
 import threading
 import time
 
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, redirect, request, send_from_directory, session
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from flask_login import current_user, login_required, login_user, logout_user
+from werkzeug.security import generate_password_hash
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -28,11 +31,13 @@ import db
 import dividends as dv
 import fire as fr
 import insights as ins
+import mail
 import planning as plan
 import portfolio as pf
 import profile as pr
 import rebalance as rb
 import taxloss as tlh
+import totp as totp_lib
 import config
 from data import DataError, fetch_data, get_dividend_info, get_fundamentals, get_next_earnings
 from indicators import add_indicators, latest_snapshot
@@ -56,6 +61,27 @@ app.config.update(
 )
 auth.init_login_manager(app)
 db.init_db()
+
+# In-memory storage — fine for Render's single free instance; resets on
+# restart, which is an acceptable tradeoff at friends-app scale (not
+# protecting against a determined distributed attacker, just blunting
+# casual brute force / signup spam). Applied per-route below.
+limiter = Limiter(get_remote_address, app=app, storage_uri="memory://")
+
+
+@app.after_request
+def _security_headers(resp):
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    if os.getenv("FLASK_ENV") != "development":
+        resp.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    # No Content-Security-Policy here — the frontend uses inline <script>/
+    # style="..." throughout (sections-*.js, index.html); a CSP strict
+    # enough to matter would break it wholesale. Accepted tradeoff, not an
+    # oversight — the other headers above still block clickjacking/MIME-
+    # sniffing attacks without touching the frontend.
+    return resp
 
 # ---------------------------------------------------------------------------
 # Sector cache (fetched lazily, stored in memory) — shared market data,
@@ -707,9 +733,10 @@ def build_nexus_data(user_id: int, force: bool = False) -> dict:
 
     raw_name = raw_profile.get("name", "")
     # Plain db call (not the current_user proxy) — this function also runs
-    # from background threads with no Flask request context.
+    # from background threads with no Flask request context. Also carries
+    # totp_enabled for the Settings panel's 2FA section.
+    user_row = db.get_user_by_id(user_id)
     if not raw_name:
-        user_row = db.get_user_by_id(user_id)
         raw_name = user_row["email"].split("@")[0] if user_row else "Investor"
     name = raw_name
     initials = "".join(w[0].upper() for w in name.split()[:2]) or "??"
@@ -722,6 +749,7 @@ def build_nexus_data(user_id: int, force: bool = False) -> dict:
         "emergency_fund": raw_profile.get("emergency_fund", True),
         "notes": raw_profile.get("notes", ""),
         "tlhThresholdPct": raw_profile.get("tlh_threshold_pct", -10.0),
+        "totpEnabled": bool(user_row and user_row.get("totp_enabled")),
     }
 
     wl_out = [{
@@ -914,7 +942,18 @@ def _refresh_after_holdings_change(user_id: int, holdings) -> None:
 # ---------------------------------------------------------------------------
 # Auth routes
 # ---------------------------------------------------------------------------
+APP_BASE_URL = os.getenv("APP_BASE_URL", "").rstrip("/")
+
+
+def _absolute_url(path: str) -> str:
+    """Build an absolute link for emails. Falls back to the live request's
+    own host if APP_BASE_URL isn't set (e.g. local dev)."""
+    base = APP_BASE_URL or request.host_url.rstrip("/")
+    return f"{base}{path}"
+
+
 @app.route("/signup", methods=["GET", "POST"])
+@limiter.limit("10 per minute", methods=["POST"])
 def signup_page():
     if request.method == "GET":
         return send_from_directory(DESIGN_DIR, "signup.html")
@@ -926,20 +965,59 @@ def signup_page():
     user_id = db.create_user(email, password)
     if user_id is None:
         return jsonify({"ok": False, "error": "That email is already registered."}), 409
+    token = db.create_auth_token(user_id, "verify_email", ttl_hours=24)
+    mail.send_verification_email(email, _absolute_url(f"/verify-email/{token}"))
+    # Deliberately NOT logging in yet — email verification is required
+    # before the dashboard is reachable (per confirmed decision).
+    return jsonify({"ok": True, "needsVerification": True})
+
+
+@app.route("/verify-email/<token>")
+def verify_email_page(token):
+    user_id = db.consume_auth_token(token, "verify_email")
+    if user_id is None:
+        return redirect("/login?verify=expired")
+    db.mark_email_verified(user_id)
     login_user(auth.User.get(user_id))
-    return jsonify({"ok": True})
+    return redirect("/")
+
+
+@app.route("/resend-verification", methods=["POST"])
+@limiter.limit("5 per minute")
+def resend_verification():
+    """An unverified user has no other path forward — same
+    doesn't-leak-existence response shape as forgot-password."""
+    body = request.get_json(force=True) if request.is_json else request.form
+    email = (body.get("email") or "").strip()
+    row = db.get_user_by_email(email) if email else None
+    if row and not row["email_verified"]:
+        token = db.create_auth_token(row["id"], "verify_email", ttl_hours=24)
+        mail.send_verification_email(row["email"], _absolute_url(f"/verify-email/{token}"))
+    return jsonify({"ok": True, "message": "If that email needs verifying, a new link is on its way."})
 
 
 @app.route("/login", methods=["GET", "POST"])
+@limiter.limit("10 per minute", methods=["POST"])
 def login_page():
     if request.method == "GET":
         return send_from_directory(DESIGN_DIR, "login.html")
     body = request.get_json(force=True) if request.is_json else request.form
     email = (body.get("email") or "").strip()
     password = body.get("password") or ""
-    user = auth.User.authenticate(email, password)
+    user, row = auth.User.authenticate(email, password)
+    if row and db.is_locked(row):
+        return jsonify({"ok": False, "error": "Too many failed attempts — try again in a few minutes."}), 429
     if not user:
+        if row:
+            db.record_failed_login(row["id"])
         return jsonify({"ok": False, "error": "Invalid email or password."}), 401
+    if not user.email_verified:
+        return jsonify({"ok": False, "error": "Please verify your email first — check your inbox for the link.",
+                         "needsVerification": True}), 403
+    db.reset_failed_login(user.id)
+    if user.totp_enabled:
+        session["pending_2fa_user_id"] = user.id
+        return jsonify({"ok": True, "needs2fa": True})
     login_user(user)
     return jsonify({"ok": True})
 
@@ -948,6 +1026,107 @@ def login_page():
 @login_required
 def logout_page():
     logout_user()
+    session.pop("pending_2fa_user_id", None)
+    return jsonify({"ok": True})
+
+
+@app.route("/2fa/verify", methods=["POST"])
+@limiter.limit("10 per minute")
+def api_2fa_verify():
+    user_id = session.get("pending_2fa_user_id")
+    if not user_id:
+        return jsonify({"ok": False, "error": "No pending login — sign in again."}), 400
+    row = db.get_user_by_id(user_id)
+    if not row:
+        session.pop("pending_2fa_user_id", None)
+        return jsonify({"ok": False, "error": "Session expired — sign in again."}), 400
+    if db.is_locked(row):
+        return jsonify({"ok": False, "error": "Too many failed attempts — try again in a few minutes."}), 429
+    body = request.get_json(force=True) or {}
+    code = (body.get("code") or "").strip()
+    use_backup = bool(body.get("backup"))
+    ok = db.consume_backup_code(user_id, code) if use_backup else totp_lib.verify_code(row["totp_secret"], code)
+    if not ok:
+        db.record_failed_login(user_id)
+        return jsonify({"ok": False, "error": "Invalid code."}), 401
+    db.reset_failed_login(user_id)
+    session.pop("pending_2fa_user_id", None)
+    login_user(auth.User.get(user_id))
+    return jsonify({"ok": True})
+
+
+@app.route("/2fa/setup")
+@login_required
+def api_2fa_setup():
+    """Generates (or regenerates) a pending secret — not enabled until
+    /2fa/enable confirms a code, so an abandoned setup never half-protects
+    the account."""
+    secret = totp_lib.generate_secret()
+    db.set_totp_secret(current_user.id, secret)
+    uri = totp_lib.totp_uri(secret, current_user.email)
+    return jsonify({"ok": True, "qr": totp_lib.qr_data_uri(uri), "secret": secret})
+
+
+@app.route("/2fa/enable", methods=["POST"])
+@login_required
+def api_2fa_enable():
+    row = db.get_user_by_id(current_user.id)
+    secret = row.get("totp_secret")
+    body = request.get_json(force=True) or {}
+    code = (body.get("code") or "").strip()
+    if not secret or not totp_lib.verify_code(secret, code):
+        return jsonify({"ok": False, "error": "Invalid code — check your authenticator app and try again."}), 400
+    db.set_totp_enabled(current_user.id, True)
+    codes = totp_lib.generate_backup_codes()
+    db.store_backup_codes(current_user.id, [generate_password_hash(c) for c in codes])
+    _invalidate(current_user.id)  # profile.totpEnabled is cached in _data_cache — must refresh
+    return jsonify({"ok": True, "backupCodes": codes})
+
+
+@app.route("/2fa/disable", methods=["POST"])
+@login_required
+def api_2fa_disable():
+    body = request.get_json(force=True) or {}
+    password = body.get("password") or ""
+    row = db.get_user_by_id(current_user.id)
+    if not db.verify_password(row, password):
+        return jsonify({"ok": False, "error": "Incorrect password."}), 401
+    db.set_totp_enabled(current_user.id, False)
+    _invalidate(current_user.id)
+    return jsonify({"ok": True})
+
+
+@app.route("/forgot-password", methods=["GET", "POST"])
+@limiter.limit("10 per minute", methods=["POST"])
+def forgot_password_page():
+    if request.method == "GET":
+        return send_from_directory(DESIGN_DIR, "forgot-password.html")
+    body = request.get_json(force=True) if request.is_json else request.form
+    email = (body.get("email") or "").strip()
+    row = db.get_user_by_email(email) if email else None
+    if row:
+        token = db.create_auth_token(row["id"], "reset_password", ttl_hours=1)
+        mail.send_password_reset_email(row["email"], _absolute_url(f"/reset-password/{token}"))
+    # Same response whether or not the email exists — avoids leaking which
+    # emails have accounts (account enumeration).
+    return jsonify({"ok": True, "message": "If that email has an account, a reset link is on its way."})
+
+
+@app.route("/reset-password/<token>", methods=["GET", "POST"])
+@limiter.limit("10 per minute", methods=["POST"])
+def reset_password_page(token):
+    if request.method == "GET":
+        return send_from_directory(DESIGN_DIR, "reset-password.html")
+    body = request.get_json(force=True) if request.is_json else request.form
+    password = body.get("password") or ""
+    if len(password) < 8:
+        return jsonify({"ok": False, "error": "Password must be at least 8 characters."}), 400
+    user_id = db.consume_auth_token(token, "reset_password")
+    if user_id is None:
+        return jsonify({"ok": False, "error": "This reset link is invalid or expired — request a new one."}), 400
+    db.set_password(user_id, password)
+    db.reset_failed_login(user_id)
+    login_user(auth.User.get(user_id))
     return jsonify({"ok": True})
 
 

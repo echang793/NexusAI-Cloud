@@ -12,25 +12,36 @@
       <div class="brand-mark"></div>
       <div class="brand-name">Nexus<span class="ai">AI</span> <span class="muted" style="font-size:13px; font-weight:500;">Cloud</span></div>
     </div>
-    <div style="font-size:18px; font-weight:600; margin-bottom:16px;">Create your account</div>
-    <div id="err" style="display:none; color:var(--red); font-size:13px; margin-bottom:12px;"></div>
-    <div style="margin-bottom:12px;">
-      <label style="display:block; font-size:12px; color:var(--text-2); margin-bottom:4px;">Email</label>
-      <input id="email" type="email" autocomplete="email"
-        style="width:100%; padding:10px 12px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-size:14px; box-sizing:border-box;"/>
+    <div id="step-form">
+      <div style="font-size:18px; font-weight:600; margin-bottom:16px;">Create your account</div>
+      <div id="err" style="display:none; color:var(--red); font-size:13px; margin-bottom:12px;"></div>
+      <div style="margin-bottom:12px;">
+        <label style="display:block; font-size:12px; color:var(--text-2); margin-bottom:4px;">Email</label>
+        <input id="email" type="email" autocomplete="email"
+          style="width:100%; padding:10px 12px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-size:14px; box-sizing:border-box;"/>
+      </div>
+      <div style="margin-bottom:8px;">
+        <label style="display:block; font-size:12px; color:var(--text-2); margin-bottom:4px;">Password (8+ characters)</label>
+        <input id="password" type="password" autocomplete="new-password"
+          style="width:100%; padding:10px 12px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-size:14px; box-sizing:border-box;"/>
+      </div>
+      <div class="muted" style="font-size:11px; margin-bottom:18px;">
+        No AI advisor chat in this version — CoastFIRE, FIRE projections, contribution tracking,
+        rebalancing, tax-loss scanning, and dividend income are all rule-based, not AI. You'll need
+        to verify your email and can optionally turn on two-factor authentication once you're in.
+      </div>
+      <button id="submit" class="btn-primary" style="width:100%; padding:10px;">Sign up</button>
+      <div class="muted" style="font-size:13px; margin-top:16px; text-align:center;">
+        Already have an account? <a href="/login" style="color:var(--accent);">Log in</a>
+      </div>
     </div>
-    <div style="margin-bottom:8px;">
-      <label style="display:block; font-size:12px; color:var(--text-2); margin-bottom:4px;">Password (8+ characters)</label>
-      <input id="password" type="password" autocomplete="new-password"
-        style="width:100%; padding:10px 12px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-size:14px; box-sizing:border-box;"/>
-    </div>
-    <div class="muted" style="font-size:11px; margin-bottom:18px;">
-      No AI advisor chat in this version — CoastFIRE, FIRE projections, contribution tracking,
-      rebalancing, tax-loss scanning, and dividend income are all rule-based, not AI.
-    </div>
-    <button id="submit" class="btn-primary" style="width:100%; padding:10px;">Sign up</button>
-    <div class="muted" style="font-size:13px; margin-top:16px; text-align:center;">
-      Already have an account? <a href="/login" style="color:var(--accent);">Log in</a>
+
+    <div id="step-check-email" hidden style="text-align:center;">
+      <div style="font-size:18px; font-weight:600; margin-bottom:10px;">Check your email</div>
+      <div class="muted" style="font-size:13px; line-height:1.6;">
+        We sent a verification link to <strong id="sent-email"></strong>. Click it to finish setting
+        up your account — the link expires in 24 hours.
+      </div>
     </div>
   </div>
 <script>
@@ -50,7 +61,12 @@
     })
       .then(r => r.json())
       .then(resp => {
-        if (resp.ok) { window.location.href = "/"; return; }
+        if (resp.ok) {
+          document.getElementById("step-form").hidden = true;
+          document.getElementById("sent-email").textContent = document.getElementById("email").value;
+          document.getElementById("step-check-email").hidden = false;
+          return;
+        }
         err.textContent = resp.error || "Sign up failed.";
         err.style.display = "block";
       })

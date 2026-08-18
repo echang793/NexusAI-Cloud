@@ -236,6 +236,64 @@
       <button id="s-save" class="btn-primary" style="flex:1;">Save changes</button>
       <div id="s-status" style="font-size:12px;color:var(--green);display:none;">Saved ✓</div>
     </div>
+
+    <div style="border-top:1px solid var(--border);margin:18px 0 14px;"></div>
+    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;font-weight:600;color:var(--text-2);margin-bottom:12px;">Security</div>
+
+    <div id="tfa-off-state">
+      <div class="flex-between" style="align-items:center;">
+        <div>
+          <div style="font-size:13px;font-weight:600;">Two-factor authentication</div>
+          <div class="muted" style="font-size:12px;">Not enabled</div>
+        </div>
+        <button id="tfa-enable-btn" class="btn-ghost">Enable</button>
+      </div>
+    </div>
+
+    <div id="tfa-on-state" hidden>
+      <div class="flex-between" style="align-items:center;">
+        <div>
+          <div style="font-size:13px;font-weight:600;">Two-factor authentication</div>
+          <div class="muted" style="font-size:12px;color:var(--green);">Enabled</div>
+        </div>
+        <button id="tfa-disable-btn" class="btn-ghost">Disable</button>
+      </div>
+    </div>
+
+    <div id="tfa-setup-flow" hidden style="margin-top:12px;padding:12px;background:var(--surface-2);border-radius:var(--r-md);">
+      <div id="tfa-step-qr">
+        <div style="font-size:12px;color:var(--text-2);margin-bottom:8px;">Scan with your authenticator app (Google Authenticator, Authy, 1Password, etc):</div>
+        <div style="text-align:center;margin-bottom:8px;"><img id="tfa-qr-img" style="width:180px;height:180px;border-radius:8px;"/></div>
+        <div class="muted" style="font-size:11px;text-align:center;margin-bottom:10px;">Or enter manually: <code id="tfa-secret-text" style="user-select:all;"></code></div>
+        <input id="tfa-confirm-code" placeholder="Enter the 6-digit code to confirm" inputmode="numeric"
+          style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid var(--border);
+                 background:var(--surface-solid);color:var(--text);font-size:14px;box-sizing:border-box;
+                 text-align:center;letter-spacing:0.1em;margin-bottom:8px;"/>
+        <div id="tfa-err" style="display:none;color:var(--red);font-size:12px;margin-bottom:8px;"></div>
+        <div class="aaf-actions">
+          <button id="tfa-cancel-btn" class="btn-ghost">Cancel</button>
+          <button id="tfa-confirm-btn" class="btn-primary">Confirm & enable</button>
+        </div>
+      </div>
+      <div id="tfa-step-codes" hidden>
+        <div style="font-size:13px;font-weight:600;margin-bottom:6px;">Save these backup codes</div>
+        <div class="muted" style="font-size:11px;margin-bottom:8px;">Each works once if you lose access to your authenticator app. Store them somewhere safe — they won't be shown again.</div>
+        <div id="tfa-backup-codes" style="font-family:ui-monospace,monospace;font-size:13px;line-height:1.8;background:var(--surface-solid);padding:10px;border-radius:8px;margin-bottom:10px;"></div>
+        <button id="tfa-done-btn" class="btn-primary" style="width:100%;">Done</button>
+      </div>
+    </div>
+
+    <div id="tfa-disable-flow" hidden style="margin-top:12px;padding:12px;background:var(--surface-2);border-radius:var(--r-md);">
+      <label style="display:block;font-size:12px;color:var(--text-2);margin-bottom:4px;">Confirm your password to disable 2FA</label>
+      <input id="tfa-disable-password" type="password"
+        style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid var(--border);
+               background:var(--surface-solid);color:var(--text);font-size:14px;box-sizing:border-box;margin-bottom:8px;"/>
+      <div id="tfa-disable-err" style="display:none;color:var(--red);font-size:12px;margin-bottom:8px;"></div>
+      <div class="aaf-actions">
+        <button id="tfa-disable-cancel-btn" class="btn-ghost">Cancel</button>
+        <button id="tfa-disable-confirm-btn" class="btn-primary">Disable 2FA</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -601,6 +659,12 @@
     if (D && D.emergencyFund) {
       document.getElementById("s-pl-monthly-expense").value = D.emergencyFund.monthlyExpense || "";
     }
+    // 2FA state
+    document.getElementById("tfa-setup-flow").hidden = true;
+    document.getElementById("tfa-disable-flow").hidden = true;
+    const tfaOn = !!(D && D.profile && D.profile.totpEnabled);
+    document.getElementById("tfa-off-state").hidden = tfaOn;
+    document.getElementById("tfa-on-state").hidden = !tfaOn;
   }
 
   document.getElementById("settings-btn").addEventListener("click", (e) => {
@@ -609,6 +673,81 @@
     openSettings();
   });
   document.getElementById("settings-close").addEventListener("click", () => { settingsPanel.hidden = true; });
+
+  // -----------------------------------------------------------------------
+  // Two-factor authentication (Settings panel)
+  // -----------------------------------------------------------------------
+  document.getElementById("tfa-enable-btn").addEventListener("click", () => {
+    document.getElementById("tfa-setup-flow").hidden = false;
+    document.getElementById("tfa-step-qr").hidden = false;
+    document.getElementById("tfa-step-codes").hidden = true;
+    document.getElementById("tfa-err").style.display = "none";
+    fetch("/2fa/setup").then(r => r.json()).then(resp => {
+      if (!resp.ok) return;
+      document.getElementById("tfa-qr-img").src = resp.qr;
+      document.getElementById("tfa-secret-text").textContent = resp.secret;
+    });
+  });
+
+  document.getElementById("tfa-cancel-btn").addEventListener("click", () => {
+    document.getElementById("tfa-setup-flow").hidden = true;
+  });
+
+  document.getElementById("tfa-confirm-btn").addEventListener("click", () => {
+    const code = document.getElementById("tfa-confirm-code").value.trim();
+    const errEl = document.getElementById("tfa-err");
+    errEl.style.display = "none";
+    fetch("/2fa/enable", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    }).then(r => r.json()).then(resp => {
+      if (!resp.ok) {
+        errEl.textContent = resp.error || "Invalid code.";
+        errEl.style.display = "block";
+        return;
+      }
+      document.getElementById("tfa-step-qr").hidden = true;
+      document.getElementById("tfa-step-codes").hidden = false;
+      document.getElementById("tfa-backup-codes").innerHTML = resp.backupCodes.map(c => `<div>${c}</div>`).join("");
+      if (window.NEXUS_DATA && window.NEXUS_DATA.profile) window.NEXUS_DATA.profile.totpEnabled = true;
+    }).catch(() => { errEl.textContent = "Something went wrong — try again."; errEl.style.display = "block"; });
+  });
+
+  document.getElementById("tfa-done-btn").addEventListener("click", () => {
+    document.getElementById("tfa-setup-flow").hidden = true;
+    document.getElementById("tfa-off-state").hidden = true;
+    document.getElementById("tfa-on-state").hidden = false;
+    if (window.NexusToast) NexusToast("Two-factor authentication enabled", "ok");
+  });
+
+  document.getElementById("tfa-disable-btn").addEventListener("click", () => {
+    document.getElementById("tfa-disable-flow").hidden = false;
+    document.getElementById("tfa-disable-err").style.display = "none";
+    document.getElementById("tfa-disable-password").value = "";
+  });
+  document.getElementById("tfa-disable-cancel-btn").addEventListener("click", () => {
+    document.getElementById("tfa-disable-flow").hidden = true;
+  });
+  document.getElementById("tfa-disable-confirm-btn").addEventListener("click", () => {
+    const password = document.getElementById("tfa-disable-password").value;
+    const errEl = document.getElementById("tfa-disable-err");
+    errEl.style.display = "none";
+    fetch("/2fa/disable", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    }).then(r => r.json()).then(resp => {
+      if (!resp.ok) {
+        errEl.textContent = resp.error || "Couldn't disable 2FA.";
+        errEl.style.display = "block";
+        return;
+      }
+      document.getElementById("tfa-disable-flow").hidden = true;
+      document.getElementById("tfa-on-state").hidden = true;
+      document.getElementById("tfa-off-state").hidden = false;
+      if (window.NEXUS_DATA && window.NEXUS_DATA.profile) window.NEXUS_DATA.profile.totpEnabled = false;
+      if (window.NexusToast) NexusToast("Two-factor authentication disabled", "ok");
+    }).catch(() => { errEl.textContent = "Something went wrong — try again."; errEl.style.display = "block"; });
+  });
 
   document.getElementById("s-save").addEventListener("click", () => {
     const payload = {

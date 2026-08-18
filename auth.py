@@ -9,6 +9,8 @@ class User(UserMixin):
     def __init__(self, row: dict):
         self.id = row["id"]
         self.email = row["email"]
+        self.email_verified = row.get("email_verified", False)
+        self.totp_enabled = row.get("totp_enabled", False)
 
     @staticmethod
     def get(user_id):
@@ -17,10 +19,15 @@ class User(UserMixin):
 
     @staticmethod
     def authenticate(email: str, password: str):
+        """Password check only — does NOT account for lockout/verification/
+        2FA, those are the caller's (server.py's route) responsibility since
+        each needs a different HTTP response. Returns (user_or_None, row_or_None)
+        so the caller has the raw row for lockout/verified checks without a
+        second DB round-trip."""
         row = db.get_user_by_email(email)
         if row and db.verify_password(row, password):
-            return User(row)
-        return None
+            return User(row), row
+        return None, row
 
 
 def init_login_manager(app):
